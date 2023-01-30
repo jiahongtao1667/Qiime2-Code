@@ -1,0 +1,227 @@
+---
+title: "Qiime2 code"
+author: "Jason"
+date: "2023-01-17"
+output: html_document
+
+手动切换到工作目录
+# 启动qiime2环境
+
+```
+cd ~
+
+conda activate qiime2-2021.2
+```
+
+## 将双端数据数据导入Qiime2
+生成paired-end-demux.qza 对象
+
+```
+time qiime tools import   \
+  --type 'SampleData[PairedEndSequencesWithQuality]'   \
+  --input-path mainfest.tsv   \
+  --output-path paired-end-demux.qza   \
+  --input-format PairedEndFastqManifestPhred33V2
+```
+
+##去除引物
+
+```
+time qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences paired-end-demux.qza \
+  --p-front-f AACMGGATTAGATACCCKG \
+  --p-front-r ACGTCATCCCCACCTTCC \
+  --o-trimmed-sequences paired-demux.qza 
+  
+```
+
+## 利用paired-demux.qza生成可视化文件
+
+```
+time qiime demux summarize \
+  --i-data paired-demux.qza \
+  --o-visualization paired-demux.qzv
+```
+质控
+```
+time qiime dada2 denoise-paired \
+--i-demultiplexed-seqs paired-demux.qza \
+--o-table table-dada2.qza #特征表\
+--o-representative-sequences rep-seqs-dada2.qza #代表性序列 \
+--o-denoising-stats dada2-stats.qza #特征表统计\
+--p-trim-left-f 0 \
+--p-trim-left-r 0 \
+--p-trunc-len-f 220 \
+--p-trunc-len-r 220 
+
+```
+# 过滤低丰度，< 10
+qiime feature-table filter-features \
+  --i-table table.qza \
+  --p-min-frequency 10 \
+  --o-filtered-table feature-frequency-filtered-table.qza
+```
+# 过滤至少在2个样品中存在的Feature，去除偶然的Feature
+qiime feature-table filter-features \
+  --i-table table.qza \
+  --p-min-samples 2 \
+  --o-filtered-table sample-contingency-filtered-table.qza
+```
+qiime taxa filter-table \
+  --i-table table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-include p__ \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table table-with-phyla-no-mitochondria-no-chloroplast.qza
+```
+
+**筛选后结果**：
+
+***- `table-with-phyla-no-mitochondria-no-chloroplast.qza`: 仅包含已知门的特征表。
+
+
+可视化
+
+```
+# 特征表统计可视化
+qiime metadata tabulate \
+  --m-input-file dada2-stats.qza \
+  --o-visualization dada2-stats.qzv
+#特征表可视化
+time qiime feature-table summarize \
+  --i-table table-dada2.qza \
+  --o-visualization table.qzv \
+  --m-sample-metadata-file metadata.tsv
+#代表性序列可视化
+time qiime feature-table tabulate-seqs \
+  --i-data rep-seqs-dada2.qza \
+  --o-visualization rep-seqs.qzv
+```
+
+#构建进化树用于多样性分析
+```
+time qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences rep-seqs-dada2.qza \
+  --o-alignment aligned-rep-seqs.qza \
+  --o-masked-alignment masked-aligned-rep-seqs.qza \
+  --o-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza
+
+```
+- α多样性
+    - 香农(Shannon’s)多样性指数（群落丰富度的定量度量，即包括丰富度`richness`和均匀度`evenness`两个层面）
+    - 可观测的OTU(Observed OTUs，群落丰富度的定性度量，只包括丰富度）
+    - Faith’s系统发育多样性（包含特征之间的系统发育关系的群落丰富度的定性度量）
+    - 均匀度Evenness（或 Pielou’s均匀度；群落均匀度的度量）
+- β多样性
+    - Jaccard距离（群落差异的定性度量，即只考虑种类，不考虑丰度）
+    - Bray-Curtis距离（群落差异的定量度量，较常用）
+    - 非加权UniFrac距离（包含特征之间的系统发育关系的群落差异定性度量）
+    - 加权UniFrac距离（包含特征之间的系统发育关系的群落差异定量度量）
+```
+time qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table table-dada2.qza \
+  --p-sampling-depth 88888 \
+  --m-metadata-file metadata.tsv \
+  --output-dir core-metrics-results
+  
+  
+#四种Alpha多样性可视化
+#faith——pd
+  qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/faith_pd_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization core-metrics-results/faith-pd-group-significance.qzv
+#均匀度
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/evenness_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization core-metrics-results/evenness-group-significance.qzv
+#observed_features
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/observed_features_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization core-metrics-results/observed_features-group-significance.qzv
+#shannon
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/shannon_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization core-metrics-results/shannon-group-significance.qzv
+
+```
+#β多样性T检验
+```
+#以bary——curtis距离为例
+time qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results/bray_curtis_distance_matrix.qza \
+  --m-metadata-file metadata.tsv \
+  --m-metadata-column Location \
+  --o-visualization core-metrics-results/bray_curtis_distance_matrix_Location-significance.qzv \
+  --p-pairwise
+
+```
+#稀疏曲线
+```
+time qiime diversity alpha-rarefaction \
+  --i-table table-dada2.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 88888 \
+  --m-metadata-file metadata.tsv \
+  --o-visualization alpha-rarefaction.qzv
+```
+  
+#物种组成分析
+在这一节中，我们将开始探索样本的物种组成，并将其与样本元数据再次组合。这个过程的第一步是为`FeatureData[Sequence]`的序列进行物种注释。我们将使用经过Naive Bayes分类器预训练的，并由`q2-feature-classifier`插件来完成这项工作。这个分类器是在`Greengenes 13_8 99% OTU`上训练的，其中序列被修剪到仅包括来自16S区域的250个碱基，该16S区域在该分析中采用V4区域的515F/806R引物扩增并测序。我们将把这个分类器应用到序列中，并且可以生成从序列到物种注释结果关联的可视化。
+
+> 注意：物种分类器根据你特定的样品制备和测序参数进行训练时表现最好，包括用于扩增的引物和测序序列的长度。因此，一般来说，你应该按照[使用`q2-feature-classifier`的训练特征分类器](https://docs.qiime2.org/2021.2/tutorials/feature-classifier/)的说明来训练自己的物种分类器。我们在[数据资源页面](https://docs.qiime2.org/2021.2/data-resources/)上提供了一些通用的分类器，包括基于Silva的16S分类器，不过将来我们可能会停止提供这些分类器，而让用户训练他们自己的分类器，这将与他们的序列数据最相关。
+#分类注释下载和构建
+
+```
+# 导入参考序列
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path gg_13_5.fasta \
+  --output-path gg_13_5.qza
+
+```
+# 导入物种分类信息
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path gg_13_5_taxonomy.txt \
+  --output-path ref-taxonomy.qza
+```
+
+# 按我们测序的引物来提取参考序列中的一段，1m
+time qiime feature-classifier extract-reads \
+  --i-sequences classifier/gg_13_5.qza \
+  --p-f-primer AACMGGATTAGATACCCKG \
+  --p-r-primer ACGTCATCCCCACCTTCC \
+  --o-reads ref-seqs.qza
+```
+```
+# 基于筛选的指定区段，生成实验特异的分类集，
+time qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads ref-seqs.qza \
+  --i-reference-taxonomy ref-taxonomy.qza \
+  --o-classifier classifier.qza
+```
+# 使用训练后的分类集对结果进行注释, 21s
+time qiime feature-classifier classify-sklearn \
+  --i-classifier classifier/classifier.qza \
+  --i-reads rep-seqs-dada2.qza \
+  --o-classification taxonomy.qza
+
+time qiime metadata tabulate \
+  --m-input-file taxonomy.qza \
+  --o-visualization taxonomy.qzv
+
+#物种分类柱状图
+```
+qiime taxa barplot \
+  --i-table table-dada2.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization taxa-bar-plots.qzv
+```
